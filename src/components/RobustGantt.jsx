@@ -122,7 +122,7 @@ export default function RobustGantt({
       renderHourTimeline(root, scale.pxPerUnit, scale.totalUnits, scale.contentPx, fine);
     } else if (view === 'month') {
       const days = daysInMonth(anchorDate);
-      renderMonthTimeline(root, scale.pxPerUnit, days, scale.contentPx);
+      renderMonthTimeline(root, scale.pxPerUnit, days, scale.contentPx, anchorDate);
     } else {
       renderWeekTimeline(root, preset);
     }
@@ -463,13 +463,26 @@ function renderHourTimeline(root, pxPerHour, total, contentWidth, show5min){
   }
 }
 
-function renderMonthTimeline(root, pxPerDay, totalDays, contentWidth){
+function renderMonthTimeline(root, pxPerDay, totalDays, contentWidth, anchorDate){
+  // weekend bands (Sat/Sun)
+  for (let d=1; d<=totalDays; d++){
+    const dt = new Date(anchorDate.getFullYear(), anchorDate.getMonth(), d);
+    const wd = dt.getDay(); // 0=Sun .. 6=Sat
+    if (wd === 0 || wd === 6){
+      const left = Math.round((d-1) * pxPerDay);
+      const band = document.createElement('div');
+      band.style.cssText = `position:absolute;left:${left}px;top:0;bottom:0;width:${Math.round(pxPerDay)}px;background:rgba(56,250,191,0.25);pointer-events:none;`;
+      root.appendChild(band);
+    }
+  }
+  // day lines
   for (let d=0; d<=totalDays; d++){
     const x = Math.round(d*pxPerDay);
     const line = document.createElement('div');
     line.style.cssText = `position:absolute;left:${x}px;top:0;bottom:0;width:1px;background:#4b5563;`;
     root.appendChild(line);
   }
+  // labels 1..N
   for (let d=1; d<=totalDays; d++){
     const cx = Math.round((d-0.5)*pxPerDay);
     const lab = document.createElement('div');
@@ -479,18 +492,33 @@ function renderMonthTimeline(root, pxPerDay, totalDays, contentWidth){
   }
 }
 
+
 function renderWeekTimeline(root, preset){
   root.innerHTML = '';
-  const days = /Work/i.test(preset) ? 5 : 7;
+  const isWork = /Work/i.test(preset);
+  const days = isWork ? 5 : 7;
   const w = root.clientWidth || 800;
   const cell = w / days;
+
+  // weekend bands for Full Week (Sun=0, Sat=6)
+  if (!isWork){
+    [0,6].forEach(idx => {
+      const left = Math.round(idx*cell);
+      const band = document.createElement('div');
+      band.style.cssText = `position:absolute;left:${left}px;top:0;bottom:0;width:${Math.round(cell)}px;background:rgba(56,250,191,0.25);pointer-events:none;`;
+      root.appendChild(band);
+    });
+  }
+
+  // grid lines
   for (let i=0;i<=days;i++){
     const x = Math.round(i*cell);
     const line = document.createElement('div');
     line.style.cssText = `position:absolute;left:${x}px;top:0;bottom:0;width:1px;background:#4b5563;`;
     root.appendChild(line);
   }
-  const names = /Work/i.test(preset)? ['Mon','Tue','Wed','Thu','Fri'] : ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'];
+  // labels
+  const names = isWork ? ['Mon','Tue','Wed','Thu','Fri'] : ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'];
   for (let i=0;i<names.length;i++){
     const cx = Math.round((i+0.5)*cell);
     const lab = document.createElement('div');
