@@ -1,0 +1,14 @@
+*** a/src/components/RobustGantt.jsx
+--- b/src/components/RobustGantt.jsx
+***************
+*** 1,999 ****
+--- 1,999 ----
+***************
+*** 1,999 ****
+--- 1,999 ----
+***************
+***
+-                             style={{ left: b.left, width: b.width, top: 0, bottom: 0, background: WEEKEND_RGBA, pointerEvents: 'none' }}
++                             style={{ left: b.left, width: b.width, top: 0, bottom: 0, background: 'rgba(56, 250, 191, 0.25)', pointerEvents: 'none' }}
+                          />
+                    ))}

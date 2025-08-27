@@ -1,0 +1,17 @@
+--- a/src/components/RobustGantt.jsx
++++ b/src/components/RobustGantt.jsx
+@@ -369,6 +369,14 @@
+        className="absolute"
+        style={{ left: b.left, width: b.width, top: 0, bottom: 0, background: WEEKEND_RGBA, pointerEvents: 'none' }}
+   />
++{/* weekend bands overlay */}
++{weekendBands.map((b,i)=> (
++  <div key={'wb-'+i}
++       className="absolute"
++       style={{ left: b.left, width: b.width, top: 0, bottom: 0, background: WEEKEND_RGBA, pointerEvents: 'none' }}
++  />
++))}
++
+ ))}
+ 
+                      style={{ height: `${rowH}px`, background: rowIdx%2===0? 'var(--gantt-bg-odd)' : 'var(--gantt-bg-even)'}}>
