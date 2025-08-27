@@ -176,7 +176,11 @@ export default function RobustGantt({
     }
     return byId;
   }, [resources, tasks, view, preset, anchorDate, maxLanes, laneOffset, BASE_ROW_PX, scale]);
-
+// Pre-compute weekend bands for bar overlay
+const weekendBands = useMemo(
+  () => computeWeekendBands(view, preset, anchorDate, scale),
+  [view, preset, anchorDate, scale]
+);
   // ----------------- Global hit‑testing so lower bars are selectable -----------------
   // We build a geometry map of rendered bars (client rects) and select the nearest vertically.
   const geomMapRef = useRef(new Map()); // taskId -> { el, rect }
@@ -361,6 +365,22 @@ export default function RobustGantt({
               return (
                 <div key={r.id} className="relative border-b border-gray-800"
                      style={{ height: `${rowH}px`, background: rowIdx%2===0? 'var(--gantt-bg-odd)' : 'var(--gantt-bg-even)'}}>
+					{/* weekend bands overlay (hinter den Bars) */}
+						{weekendBands.map((b, i) => (
+						  <div
+							key={`wb-${i}`}
+							className="absolute"
+							style={{
+							  left: b.left,
+							  width: b.width,
+							  top: 0,
+							  bottom: 0,
+							  background: 'rgba(56, 250, 191, 0.25)', // #38FABF @ 25%
+							  pointerEvents: 'none'
+							}}
+						  />
+						))}
+ 
                   {info.items?.map(({ task, seg, lane }) => {
                     const { leftPx, widthPx, label } = segToPixels(seg, scale);
                     const color = task.color || colorFor(resourceHash(task.resourceId), DEFAULT_PALETTE);
@@ -572,6 +592,32 @@ function segToPixels(seg, scale){
   const widthPx = Math.max(4, Math.round((endUnit - startUnit) * scale.pxPerUnit));
   return { leftPx, widthPx, label };
 }
+
+// Compute weekend bands (left/width in pixels) for current view
+function computeWeekendBands(view, preset, anchorDate, scale){
+  const bands = [];
+  if (!scale) return bands;
+  const px = scale.pxPerUnit;
+
+  if (view === 'month'){
+    const dim = daysInMonth(anchorDate);
+    for (let d = 1; d <= dim; d++){
+      const dt = new Date(anchorDate.getFullYear(), anchorDate.getMonth(), d);
+      const wd = dt.getDay(); // 0=Sun .. 6=Sat
+      if (wd === 0 || wd === 6){
+        const left = Math.round((d - 1) * px);
+        bands.push({ left, width: Math.round(px) });
+      }
+    }
+  } else if (view === 'week' && !/Work/i.test(preset || '')){
+    // Full Week: Sunday (0) and Saturday (6)
+    bands.push({ left: Math.round(0 * px), width: Math.round(px) });
+    bands.push({ left: Math.round(6 * px), width: Math.round(px) });
+  }
+  // Hour-View: keine Weekend-Bänder
+  return bands;
+}
+
 
 // Lane assignment (interval partitioning)
 function assignLanes(items, maxLanes){
