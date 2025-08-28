@@ -1,51 +1,39 @@
-import React, { useEffect, useMemo, useRef, useState, useLayoutEffect } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 
 /**
- * RobustGantt.jsx — API‑ready Gantt with overlap lanes, snap, 5‑min grid & drag tooltip
- * Now with precise global hit‑testing so you can grab lower bars in an overlap.
- *
- * This version continues the code you pasted from the other chat ("Gantt Chart Implementierung Hilfe")
- * and integrates the key ideas we discussed:
- * - ✅ Configurable lane offset (2/5/10 px) and max lanes (1–20) via header dropdowns.
- * - ✅ Greedy interval partitioning per resource to assign lanes for overlapping bars.
- * - ✅ Row height expands by (laneCount-1)*laneOffset so shifted bars never clip.
- * - ✅ NEW: Container‑level hit‑testing selects the bar whose vertical center is nearest to the cursor
- *        (even when bars overlap), so you can always grab the lower/shifted bar.
- * - ✅ Edge resize handles preserved; single scrollbar on bars; timeline follows via transform.
- * - ✅ Snap dropdown adapts to Hour/Week/Month; 5‑min grid for 4/6 hours presets; drag tooltip.
+ * RobustGantt — stabiles Restore
+ * - Weekend-Overlays (Month + Full Week) im Header UND Bar-Bereich
+ * - Exakte Ausrichtung durch identische Pixelbasis (floor-Rundung)
+ * - Kein Header-Left-Border (vermeidet 1px-Offset)
+ * - Drag/Resize: stabile, einfache Version (wie vorher funktionierend)
  */
 
 export default function RobustGantt({
   resources: resourcesProp,
   tasks: tasksProp,
-  initialView = 'hour',
+  initialView = 'month',
   initialPreset,
   initialMonth,
   palette = DEFAULT_PALETTE,
   onTasksChange,
 }){
-  // ------------ Constants ------------
-  const BASE_ROW_PX = 40; // matches --gantt-row-h initial
+  const BASE_ROW_PX = 40;
 
-  // ------------ State ------------
+  // ---- State ----
   const [view, setView] = useState(initialView);
-  const [preset, setPreset] = useState(() => initialPreset ?? (initialView==='hour' ? '24 Hours' : initialView==='week' ? 'Full Week' : 'Full Month'));
+  const [preset, setPreset] = useState(() => initialPreset ?? defaultPresetFor(initialView));
   const [anchorMonth, setAnchorMonth] = useState(() => {
     if (initialMonth) return initialMonth;
     const d = new Date();
     return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}`;
   });
 
-  // Snap step in *view units* (Hour: hours, Week/Month: fractions of a day)
   const [snapUnits, setSnapUnits] = useState(getSnapOptions(initialView, initialPreset ?? defaultPresetFor(initialView))[0].units);
-  useEffect(() => {
-    const opts = getSnapOptions(view, preset);
-    setSnapUnits(opts[0].units);
-  }, [view, preset]);
+  useEffect(() => { setSnapUnits(getSnapOptions(view, preset)[0].units); }, [view, preset]);
 
-  // Overlap behavior
-  const [laneOffset, setLaneOffset] = useState(5); // px per lane step (2/5/10)
-  const [maxLanes, setMaxLanes] = useState(10);    // 1..20
+  // Overlap rendering
+  const [laneOffset, setLaneOffset] = useState(5);
+  const [maxLanes, setMaxLanes] = useState(10);
   const [hoveredId, setHoveredId] = useState(null);
 
   const anchorDate = useMemo(() => {
@@ -53,9 +41,9 @@ export default function RobustGantt({
     return new Date(y, (m||1)-1, 1);
   }, [anchorMonth]);
 
-  // ------------ Data (API or sample) ------------
+  // ---- Data ----
   const resources = useMemo(() => {
-    return resourcesProp && resourcesProp.length ? resourcesProp : generateResources(120);
+    return resourcesProp && resourcesProp.length ? resourcesProp : generateResources(30);
   }, [resourcesProp]);
 
   const [internalTasks, setInternalTasks] = useState([]);
@@ -72,7 +60,7 @@ export default function RobustGantt({
 
   const tasks = internalTasks;
 
-  // ------------ Layout Refs ------------
+  // ---- Layout Refs ----
   const timelineContentRef = useRef(null);
   const chartScrollRef     = useRef(null);
   const chartContentRef    = useRef(null);
@@ -88,10 +76,10 @@ export default function RobustGantt({
     root.style.setProperty('--gantt-tooltip-bg', 'rgba(0,0,0,0.9)');
   }, []);
 
-  // ------------ Scale computation ------------
+  // ---- Scale ----
   const scale = useGanttScale(view, preset, anchorDate, chartScrollRef);
 
-  // Match content widths and set transform to visually align timeline
+  // Match content widths & sync transform
   useEffect(() => {
     const tc = timelineContentRef.current;
     const cc = chartContentRef.current;
@@ -107,12 +95,12 @@ export default function RobustGantt({
     const max = Math.max(0, W - cs.clientWidth);
     if (cs.scrollLeft > max) cs.scrollLeft = max;
 
-    const x = view === 'week' ? 0 : cs.scrollLeft; // Week has no H-scroll
+    const x = view === 'week' ? 0 : cs.scrollLeft; // keine H-Scroll in Week
     tc.style.transform = `translateX(-${x}px)`;
     tc.style.willChange = 'transform';
   }, [scale, view]);
 
-  // Render timeline ticks/labels
+  // ---- Timeline render ----
   useEffect(() => {
     const root = timelineContentRef.current;
     if (!root || !scale) return;
@@ -124,41 +112,36 @@ export default function RobustGantt({
       const days = daysInMonth(anchorDate);
       renderMonthTimeline(root, scale.pxPerUnit, days, scale.contentPx, anchorDate);
     } else {
-      renderWeekTimeline(root, preset);
+      renderWeekTimeline(root, preset, scale.pxPerUnit);
     }
   }, [view, preset, anchorDate, scale]);
 
-  // Scroll sync: bars (single H scrollbar) → timeline (transform) and left table V sync
+  // Scroll sync (bars → timeline; left table vertical)
   useEffect(() => {
     const cs = chartScrollRef.current;
     if (!cs) return;
     const onScroll = () => {
       const tlc = timelineContentRef.current;
-      if (tlc) {
-        const x = cs.scrollLeft;
-        tlc.style.transform = `translateX(-${x}px)`;
-        tlc.style.willChange = 'transform';
-      }
+      if (tlc) tlc.style.transform = `translateX(-${cs.scrollLeft}px)`;
       const left = tableLeftRef.current; if (left) left.scrollTop = cs.scrollTop;
-      rebuildGeom(); // keep hit map in sync while scrolling
     };
     cs.addEventListener('scroll', onScroll, { passive: true });
     requestAnimationFrame(onScroll);
     return () => cs.removeEventListener('scroll', onScroll);
   }, []);
 
-  // Resize → recompute scale (by bumping a tick inside hook)
+  // Resize → recompute scale
   useEffect(() => {
     const el = chartScrollRef.current; if (!el) return;
-    const ro = new ResizeObserver(() => { setView(v => v); rebuildGeom(); });
+    const ro = new ResizeObserver(() => { setView(v => v); });
     ro.observe(el);
     return () => ro.disconnect();
   }, []);
 
-  // Dragging / resizing with tooltip + snapping
-  const { onBarMouseDown, beginFromElement } = useBarDrag({ view, anchorDate, scale, onTasksChange, setInternalTasks, snapUnits });
+  // Drag & resize (stabile einfache Version)
+  const { onBarMouseDown } = useBarDrag({ view, anchorDate, scale, onTasksChange, setInternalTasks, snapUnits });
 
-  // ---------- Compute per-row lane layout (memoized) ----------
+  // ---- Lane layout per row ----
   const rowLayout = useMemo(() => {
     const byId = new Map();
     for (const r of resources){
@@ -169,7 +152,6 @@ export default function RobustGantt({
         if (!seg) continue;
         segs.push({ task: t, seg });
       }
-      // Assign lanes greedily
       const { items, laneCount } = assignLanes(segs, maxLanes);
       const rowHeight = BASE_ROW_PX + Math.max(0, laneCount-1) * laneOffset;
       byId.set(r.id, { items, laneCount, rowHeight });
@@ -177,68 +159,11 @@ export default function RobustGantt({
     return byId;
   }, [resources, tasks, view, preset, anchorDate, maxLanes, laneOffset, BASE_ROW_PX, scale]);
 
-  // ----------------- Global hit‑testing so lower bars are selectable -----------------
-  // We build a geometry map of rendered bars (client rects) and select the nearest vertically.
-  const geomMapRef = useRef(new Map()); // taskId -> { el, rect }
-
-  const rebuildGeom = () => {
-    const map = new Map();
-    const root = chartContentRef.current;
-    if (!root) return;
-    const nodes = root.querySelectorAll('[data-bar="1"]');
-    nodes.forEach((el) => {
-      const id = el.getAttribute('data-taskid');
-      if (!id) return;
-      map.set(id, { el, rect: el.getBoundingClientRect() });
-    });
-    geomMapRef.current = map;
-  };
-
-  useLayoutEffect(() => {
-    rebuildGeom();
-    // Also rebuild on window resize to keep rects fresh
-    const on = () => rebuildGeom();
-    window.addEventListener('resize', on);
-    return () => window.removeEventListener('resize', on);
-  }, [resources, tasks, view, preset, anchorDate, laneOffset, maxLanes, scale]);
-
-  const pickBarAt = (clientX, clientY) => {
-    let best = null;
-    let bestDy = Infinity;
-    geomMapRef.current.forEach(({ el, rect }, taskId) => {
-      // Check horizontal overlap first; vertical we'll rank by center distance
-      if (clientX >= rect.left && clientX <= rect.right && clientY >= rect.top && clientY <= rect.bottom){
-        const cy = rect.top + rect.height/2;
-        const dy = Math.abs(clientY - cy);
-        if (dy < bestDy){ bestDy = dy; best = { taskId, el, rect }; }
-      }
-    });
-    return best; // may be null
-  };
-
-  const onSurfaceMove = (e) => {
-    const hit = pickBarAt(e.clientX, e.clientY);
-    setHoveredId(hit?.taskId || null);
-    if (hit) {
-      const xIn = e.clientX - hit.rect.left;
-      const edge = 8;
-      const nearEdge = xIn < edge || xIn > hit.rect.width - edge;
-      document.body.style.cursor = nearEdge ? 'ew-resize' : 'grab';
-    } else {
-      document.body.style.cursor = 'default';
-    }
-  };
-
-  const onSurfaceDown = (e) => {
-    const hit = pickBarAt(e.clientX, e.clientY);
-    if (!hit) return;
-    const xIn = e.clientX - hit.rect.left;
-    const edge = 8;
-    let mode = 'move';
-    if (xIn < edge) mode = 'resize-l'; else if (xIn > hit.rect.width - edge) mode = 'resize-r';
-    beginFromElement(hit.el, hit.taskId, mode, e.clientX, e.clientY);
-    e.preventDefault();
-  };
+  // Bänder für Bars (identische Pixelbasis wie Header)
+  const weekendBands = useMemo(
+    () => computeWeekendBandsPx(view, preset, anchorDate, scale?.pxPerUnit || 0),
+    [view, preset, anchorDate, scale]
+  );
 
   return (
     <div id="gantt-root" className="w-full h-full bg-gray-900 text-gray-100 select-none">
@@ -247,9 +172,9 @@ export default function RobustGantt({
         <div id="gantt-title" className="pl-3 pr-0 py-3 border-b border-gray-700 w-fit">
           <h2 className="text-lg font-semibold text-gray-200 whitespace-nowrap">Resources</h2>
         </div>
-        <div id="gantt-header-right" className="border-l border-gray-700">
+        {/* WICHTIG: KEIN border-l → verhindert 1px-Versatz */}
+        <div id="gantt-header-right">
           <div id="gantt-controls" className="flex flex-wrap gap-3 items-center px-3 py-2">
-            {/* View selector */}
             <div className="ctrl flex items-center gap-2">
               <label className="text-sm text-gray-300">View:</label>
               <select className="bg-gray-800 border border-gray-700 rounded px-2 py-1" value={view}
@@ -260,7 +185,6 @@ export default function RobustGantt({
               </select>
             </div>
 
-            {/* Preset selector follows the active view */}
             <div className="ctrl flex items-center gap-2">
               <label className="text-sm text-gray-300">Preset:</label>
               {view==='hour' && (
@@ -280,19 +204,16 @@ export default function RobustGantt({
               )}
             </div>
 
-            {/* Month picker */}
             <div className="ctrl flex items-center gap-2">
               <label className="text-sm text-gray-300">Month:</label>
               <input id="gantt-month" type="month" className="bg-gray-800 border border-gray-700 rounded px-2 py-1"
                      value={anchorMonth} onChange={e=>setAnchorMonth(e.target.value)} />
             </div>
 
-            {/* Date label */}
             <div className="ctrl text-sm text-gray-400">
               <span id="gantt-date-label">{formatDateDisplay(new Date())}</span>
             </div>
 
-            {/* Snap selector (adapts to view/preset) */}
             <div className="ctrl flex items-center gap-2">
               <label className="text-sm text-gray-300">Snap:</label>
               <select
@@ -306,7 +227,6 @@ export default function RobustGantt({
               </select>
             </div>
 
-            {/* Lane offset */}
             <div className="ctrl flex items-center gap-2">
               <label className="text-sm text-gray-300">Offset:</label>
               <select className="bg-gray-800 border border-gray-700 rounded px-2 py-1" value={laneOffset}
@@ -315,7 +235,6 @@ export default function RobustGantt({
               </select>
             </div>
 
-            {/* Max lanes */}
             <div className="ctrl flex items-center gap-2">
               <label className="text-sm text-gray-300">Max lanes:</label>
               <select className="bg-gray-800 border border-gray-700 rounded px-2 py-1" value={maxLanes}
@@ -325,7 +244,7 @@ export default function RobustGantt({
             </div>
           </div>
 
-          {/* Timeline (purely visual, scrolls via transform) */}
+          {/* Timeline */}
           <div id="gantt-timeline-scroll" className="w-full overflow-x-hidden overflow-y-hidden border-b border-gray-700">
             <div id="gantt-timeline-content" ref={timelineContentRef} className="relative h-12" />
           </div>
@@ -350,33 +269,33 @@ export default function RobustGantt({
           </div>
         </div>
 
-        {/* Bars scroller (the ONLY scrollbar) */}
+        {/* Bars scroller */}
         <div id="gantt-chart-scroll" ref={chartScrollRef} className="relative flex-1 overflow-auto">
-          <div id="gantt-chart-content" ref={chartContentRef} className="relative"
-               onMouseMove={onSurfaceMove} onMouseDown={onSurfaceDown}
-          >
+          <div id="gantt-chart-content" ref={chartContentRef} className="relative">
             {resources.map((r, rowIdx) => {
               const info = rowLayout.get(r.id) || { items: [], laneCount: 1, rowHeight: BASE_ROW_PX };
               const rowH = info.rowHeight;
               return (
                 <div key={r.id} className="relative border-b border-gray-800"
                      style={{ height: `${rowH}px`, background: rowIdx%2===0? 'var(--gantt-bg-odd)' : 'var(--gantt-bg-even)'}}>
+                  {/* weekend bands overlay */}
+                  {weekendBands.map((b,i)=> (
+                    <div key={`wb-${i}`} className="absolute"
+                         style={{ left: b.left, width: b.width, top: 0, bottom: 0, background: 'rgba(56, 250, 191, 0.25)', pointerEvents: 'none' }} />
+                  ))}
                   {info.items?.map(({ task, seg, lane }) => {
                     const { leftPx, widthPx, label } = segToPixels(seg, scale);
                     const color = task.color || colorFor(resourceHash(task.resourceId), DEFAULT_PALETTE);
                     const topPx = 6 + lane * laneOffset;
-                    const isHover = hoveredId === task.id;
-                    const heightPx = BASE_ROW_PX - 12;
+                    const z = hoveredId===task.id ? 30 : (lane+1);
                     return (
                       <div key={task.id}
-                           id={`bar-${task.id}`}
-                           data-bar="1"
-                           data-taskid={task.id}
-                           className="absolute rounded text-xs text-white px-2 flex items-center"
-                           style={{ left: leftPx, width: widthPx, top: topPx, height: `${heightPx}px`,
-                                    background: color, whiteSpace:'nowrap', overflow:'hidden',
-                                    outline: isHover? '2px solid rgba(255,255,255,0.35)' : 'none',
-                                    pointerEvents: 'none' /* events handled at container for precise hit‑testing */ }}
+                           className="absolute rounded text-xs text-white px-2 flex items-center cursor-grab"
+                           style={{ left: leftPx, width: widthPx, top: topPx, height: `${BASE_ROW_PX - 12}px`,
+                                    background: color, whiteSpace:'nowrap', overflow:'hidden', zIndex: z }}
+                           onMouseDown={(e) => onBarMouseDown(e, { taskId: task.id })}
+                           onMouseEnter={() => setHoveredId(task.id)}
+                           onMouseLeave={() => setHoveredId(h => (h===task.id? null : h))}
                       >
                         <span className="truncate w-full text-center">{label}</span>
                       </div>
@@ -392,7 +311,7 @@ export default function RobustGantt({
   );
 }
 
-// ----------------- Helpers -----------------
+/* ----------------- Helpers ----------------- */
 
 function defaultPresetFor(v){
   if (v==='hour') return '24 Hours';
@@ -419,42 +338,43 @@ function useGanttScale(view, preset, anchorDate, chartScrollRef){
   }, [view, preset, anchorDate, csW, tick]);
 }
 
+/* ---- Timeline renderers (pixelgenau mit floor) ---- */
+
 function renderHourTimeline(root, pxPerHour, total, contentWidth, show5min){
-  const W = Math.round(contentWidth);
-  // Major hour lines
+  const W = Math.floor(contentWidth);
+  const leftOf = (u) => Math.floor(u * pxPerHour);
+
   for (let h=0; h<=total; h++){
-    const x = Math.round(h*pxPerHour);
+    const x = leftOf(h);
     const line = document.createElement('div');
     line.style.cssText = `position:absolute;left:${x}px;top:0;bottom:0;width:1px;background:#4b5563;`;
     root.appendChild(line);
   }
-  // Half-hour ticks
   for (let h=0; h<total; h++){
-    const x = Math.round(h*pxPerHour + pxPerHour/2);
+    const x = leftOf(h + 0.5);
     if (x < W){
       const m = document.createElement('div');
       m.style.cssText = `position:absolute;left:${x}px;top:0;height:60%;width:1px;background:#374151;`;
       root.appendChild(m);
     }
   }
-  // 5-minute minor grid (only for 4/6 hours presets)
   if (show5min){
-    const pxPerMin = pxPerHour / 60;
-    const totalMinutes = total * 60; // 24h → 1440
-    for (let min=0; min<=totalMinutes; min+=5){
-      const x = Math.round(min * pxPerMin);
-      const isHour = min % 60 === 0;
-      const isHalf = min % 30 === 0;
-      if (!isHour && !isHalf && x < W){
-        const tick = document.createElement('div');
-        tick.style.cssText = `position:absolute;left:${x}px;top:0;height:35%;width:1px;background:#2b2f36;opacity:0.7;`;
-        root.appendChild(tick);
+    const step = 5/60;
+    for (let u=0; u<=total; u+=step){
+      const isHour = Math.abs(u - Math.round(u)) < 1e-9;
+      const isHalf = Math.abs((u*60)%30) < 1e-9;
+      if (!isHour && !isHalf){
+        const x = leftOf(u);
+        if (x < W){
+          const tick = document.createElement('div');
+          tick.style.cssText = `position:absolute;left:${x}px;top:0;height:35%;width:1px;background:#2b2f36;opacity:0.7;`;
+          root.appendChild(tick);
+        }
       }
     }
   }
-  // Hour labels 00..24
   for (let h=0; h<=total; h++){
-    const x = Math.round(h*pxPerHour);
+    const x = leftOf(h);
     const lab = document.createElement('div');
     lab.textContent = String(h).padStart(2,'0');
     lab.style.cssText = `position:absolute;top:4px;left:${x}px;font-size:12px;color:#cbd5e1;white-space:nowrap;`;
@@ -464,27 +384,30 @@ function renderHourTimeline(root, pxPerHour, total, contentWidth, show5min){
 }
 
 function renderMonthTimeline(root, pxPerDay, totalDays, contentWidth, anchorDate){
-  // weekend bands (Sat/Sun)
+  const bandFor = (unitIndex) => {
+    const left  = Math.floor(unitIndex * pxPerDay);
+    const right = Math.floor((unitIndex + 1) * pxPerDay);
+    const width = Math.max(1, right - left);
+    return { left, width };
+  };
+  // weekend bands
   for (let d=1; d<=totalDays; d++){
-    const dt = new Date(anchorDate.getFullYear(), anchorDate.getMonth(), d);
-    const wd = dt.getDay(); // 0=Sun .. 6=Sat
+    const wd = new Date(anchorDate.getFullYear(), anchorDate.getMonth(), d).getDay();
     if (wd === 0 || wd === 6){
-      const left = Math.round((d-1) * pxPerDay);
+      const { left, width } = bandFor(d - 1);
       const band = document.createElement('div');
-      band.style.cssText = `position:absolute;left:${left}px;top:0;bottom:0;width:${Math.round(pxPerDay)}px;background:rgba(56,250,191,0.25);pointer-events:none;`;
+      band.style.cssText = `position:absolute;left:${left}px;top:0;bottom:0;width:${width}px;background:rgba(56,250,191,0.25);pointer-events:none;`;
       root.appendChild(band);
     }
   }
-  // day lines
   for (let d=0; d<=totalDays; d++){
-    const x = Math.round(d*pxPerDay);
+    const x = Math.floor(d*pxPerDay);
     const line = document.createElement('div');
     line.style.cssText = `position:absolute;left:${x}px;top:0;bottom:0;width:1px;background:#4b5563;`;
     root.appendChild(line);
   }
-  // labels 1..N
   for (let d=1; d<=totalDays; d++){
-    const cx = Math.round((d-0.5)*pxPerDay);
+    const cx = Math.floor((d-0.5)*pxPerDay);
     const lab = document.createElement('div');
     lab.textContent = String(d);
     lab.style.cssText = `position:absolute;top:4px;left:${cx}px;transform:translateX(-50%);font-size:12px;color:#cbd5e1;white-space:nowrap;`;
@@ -492,41 +415,42 @@ function renderMonthTimeline(root, pxPerDay, totalDays, contentWidth, anchorDate
   }
 }
 
-
-function renderWeekTimeline(root, preset){
+function renderWeekTimeline(root, preset, pxPerDay){
   root.innerHTML = '';
   const isWork = /Work/i.test(preset);
   const days = isWork ? 5 : 7;
-  const w = root.clientWidth || 800;
-  const cell = w / days;
 
-  // weekend bands for Full Week (Sun=0, Sat=6)
   if (!isWork){
+    const bandFor = (unitIndex) => {
+      const left  = Math.floor(unitIndex * pxPerDay);
+      const right = Math.floor((unitIndex + 1) * pxPerDay);
+      const width = Math.max(1, right - left);
+      return { left, width };
+    };
     [0,6].forEach(idx => {
-      const left = Math.round(idx*cell);
+      const { left, width } = bandFor(idx);
       const band = document.createElement('div');
-      band.style.cssText = `position:absolute;left:${left}px;top:0;bottom:0;width:${Math.round(cell)}px;background:rgba(56,250,191,0.25);pointer-events:none;`;
+      band.style.cssText = `position:absolute;left:${left}px;top:0;bottom:0;width:${width}px;background:rgba(56,250,191,0.25);pointer-events:none;`;
       root.appendChild(band);
     });
   }
-
-  // grid lines
   for (let i=0;i<=days;i++){
-    const x = Math.round(i*cell);
+    const x = Math.floor(i*pxPerDay);
     const line = document.createElement('div');
     line.style.cssText = `position:absolute;left:${x}px;top:0;bottom:0;width:1px;background:#4b5563;`;
     root.appendChild(line);
   }
-  // labels
   const names = isWork ? ['Mon','Tue','Wed','Thu','Fri'] : ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'];
   for (let i=0;i<names.length;i++){
-    const cx = Math.round((i+0.5)*cell);
+    const cx = Math.floor((i+0.5)*pxPerDay);
     const lab = document.createElement('div');
     lab.textContent = names[i];
     lab.style.cssText = `position:absolute;top:4px;left:${cx}px;transform:translateX(-50%);font-size:12px;color:#cbd5e1;white-space:nowrap;`;
     root.appendChild(lab);
   }
 }
+
+/* ---- General helpers ---- */
 
 function daysInMonth(date){ return new Date(date.getFullYear(), date.getMonth()+1, 0).getDate(); }
 function clamp(n,a,b){ return Math.max(a, Math.min(b, n)); }
@@ -540,12 +464,10 @@ function projectTaskToView(task, view, preset, anchorDate){
     return { startUnit: startH, endUnit: Math.max(startH+0.05, endH), label: task.title };
   }
   if (view==='week'){
-    // Use fractional days to keep intra-day precision for tooltip and width
     const work = /Work/i.test(preset);
     const start = task.start; const end = task.end;
-    // ISO week starting Monday
-    const monIdx = (start.getDay()+6)%7; // 0..6 Mon..Sun
-    const dayIdx = work ? monIdx : start.getDay(); // for Full Week use native 0..6 Sun..Sat
+    const monIdx = (start.getDay()+6)%7; // Mon..Sun 0..6
+    const dayIdx = work ? monIdx : start.getDay();
     const dayCount = work ? 5 : 7;
     if (dayIdx<0 || dayIdx>=dayCount) return null;
     const startUnit = dayIdx + (start.getHours()+ start.getMinutes()/60)/24;
@@ -559,7 +481,7 @@ function projectTaskToView(task, view, preset, anchorDate){
     const sFrac = (task.start.getHours()+task.start.getMinutes()/60)/24;
     const eFrac = (task.end.getHours()+task.end.getMinutes()/60)/24;
     const startUnit = sDay + sFrac;
-    const endUnit   = Math.max(startUnit + 1/48, eDay + eFrac); // at least 30 min
+    const endUnit   = Math.max(startUnit + 1/48, eDay + eFrac);
     return { startUnit, endUnit, label: task.title };
   }
   return null;
@@ -573,71 +495,30 @@ function segToPixels(seg, scale){
   return { leftPx, widthPx, label };
 }
 
-// Lane assignment (interval partitioning)
-function assignLanes(items, maxLanes){
-  // items: [{ task, seg: {startUnit,endUnit,label} }]
-  const sorted = items.slice().sort((a,b) => a.seg.startUnit - b.seg.startUnit || a.seg.endUnit - b.seg.endUnit);
-  const laneEnds = []; // endUnit per lane
+// Weekend-Bänder exakt an Grid-Linien (Bar-Bereich nutzt dieselbe pxBasis)
+function computeWeekendBandsPx(view, preset, anchorDate, pxPerUnit){
   const out = [];
-  for (const it of sorted){
-    let lane = laneEnds.findIndex(end => end <= it.seg.startUnit + 1e-9);
-    if (lane === -1){
-      if (laneEnds.length < maxLanes) {
-        lane = laneEnds.length;
-        laneEnds.push(it.seg.endUnit);
-      } else {
-        // place in last lane if we've hit the cap
-        lane = maxLanes - 1;
-        laneEnds[lane] = Math.max(laneEnds[lane], it.seg.endUnit);
-      }
-    } else {
-      laneEnds[lane] = it.seg.endUnit;
+  if (!pxPerUnit) return out;
+  const bandFor = (unitIndex) => {
+    const left  = Math.floor(unitIndex * pxPerUnit);
+    const right = Math.floor((unitIndex + 1) * pxPerUnit);
+    const width = Math.max(1, right - left);
+    return { left, width };
+  };
+  if (view === 'month'){
+    const dim = daysInMonth(anchorDate);
+    for (let d = 1; d <= dim; d++){
+      const wd = new Date(anchorDate.getFullYear(), anchorDate.getMonth(), d).getDay();
+      if (wd === 0 || wd === 6) out.push(bandFor(d - 1));
     }
-    out.push({ task: it.task, seg: it.seg, lane });
+  } else if (view === 'week' && !/Work/i.test(preset || '')){
+    out.push(bandFor(0));
+    out.push(bandFor(6));
   }
-  return { items: out, laneCount: Math.max(1, laneEnds.length) };
+  return out;
 }
 
-// --------- API / Data utilities ----------
-const DEFAULT_PALETTE = [
-  '#3B82F6','#10B981','#F59E0B','#EF4444','#8B5CF6','#06B6D4','#84CC16','#F97316','#E11D48','#14B8A6'
-];
-
-function normalizeTask(t, palette){
-  const start = (t.start instanceof Date) ? t.start : new Date(t.start);
-  const end   = (t.end   instanceof Date) ? t.end   : new Date(t.end);
-  const color = t.color || colorFor(resourceHash(t.resourceId), palette);
-  return { ...t, start, end, color };
-}
-
-function resourceHash(id){ let h=0; for (let i=0;i<id.length;i++){ h=(h*31 + id.charCodeAt(i))|0; } return Math.abs(h); }
-function colorFor(h, palette){ return palette[h % palette.length]; }
-
-function generateResources(n){
-  const first = ["Alice","Yusuf","Ivan","Leo","Zara","George","Ethan","Iris","Ulrich","Edward","Walter","Petra","Cedric","Delia","Rachel","Maya","Charlie","Xena","Noah","Vera","Diana","Hugo","Julia","Samuel","Kevin","Luna","Bella","Quentin","Marcus","Jake","Nina"]; 
-  const last  = ["Robinson","Harris","Nguyen","Johnson","Gonzalez","Flores","Lewis","Young","Hill","Anderson","Wright","Moore","Taylor","Davis","Torres","Perez","Allen","Walker","King","Brown","Sanchez","Williams","Martinez","Ramirez","White","Scott","Clark","Thomas","Nguyen"]; 
-  const out=[]; for(let i=0;i<n;i++){ out.push({ id:`r${i}`, name:`${first[i%first.length]} ${last[(i*7)%last.length]}` }); } return out;
-}
-
-function generateSampleTasks(resources, anchorDate, palette){
-  const tasks = [];
-  const dim = daysInMonth(anchorDate);
-  for (const r of resources){
-    const count = 5 + Math.floor(Math.random()*11); // 5..15
-    for(let i=0;i<count;i++){
-      const day = 1 + Math.floor(Math.random()*dim);
-      const startH = Math.floor(Math.random()*20);
-      const durH = 2 + Math.floor(Math.random()*5);
-      const start = new Date(anchorDate.getFullYear(), anchorDate.getMonth(), day, startH, 0, 0);
-      const end   = new Date(start.getTime() + durH*3600*1000);
-      const color = colorFor(resourceHash(r.id) + i, palette);
-      tasks.push({ id:`${r.id}-t${i}`, resourceId:r.id, title:`T${i+1}`, start, end, color });
-    }
-  }
-  return tasks;
-}
-
-// --------- Drag & Resize with tooltip + snapping ---------
+/* ---- Drag & Resize (stabile, einfache Version) ---- */
 function useBarDrag({ view, anchorDate, scale, onTasksChange, setInternalTasks, snapUnits }){
   const dragRef = useRef(null);
   const tipRef = useRef(null);
@@ -660,25 +541,21 @@ function useBarDrag({ view, anchorDate, scale, onTasksChange, setInternalTasks, 
     tipRef.current = el;
     return el;
   };
-
-  const hideTip = () => {
-    const el = tipRef.current; if (el && el.parentNode) el.parentNode.removeChild(el); tipRef.current = null;
-  };
+  const hideTip = () => { const el = tipRef.current; if (el && el.parentNode) el.parentNode.removeChild(el); tipRef.current = null; };
 
   const updateTip = (startUnit, endUnit, clientX, clientY) => {
     const el = ensureTip();
     const { start, end } = unitsToDateRange(view, anchorDate, startUnit, endUnit);
     el.textContent = `${fmtDateTime(start)} → ${fmtDateTime(end)}`;
-    const x = clientX + 12, y = clientY + 12;
-    el.style.left = x + 'px';
-    el.style.top  = y + 'px';
+    el.style.left = (clientX + 12) + 'px';
+    el.style.top  = (clientY + 12) + 'px';
   };
 
   const snapPx = (px) => {
     if (!scale || !snapUnits) return Math.round(px);
-    const units = px / scale.pxPerUnit;               // convert px → view units
+    const units = px / scale.pxPerUnit;
     const snappedUnits = Math.round(units / snapUnits) * snapUnits;
-    return Math.round(snappedUnits * scale.pxPerUnit); // back to px
+    return Math.round(snappedUnits * scale.pxPerUnit);
   };
 
   useEffect(() => {
@@ -704,8 +581,7 @@ function useBarDrag({ view, anchorDate, scale, onTasksChange, setInternalTasks, 
         ds.el.style.width = newWidth + 'px';
       }
 
-      // Tooltip update with snapped units
-      const leftPx = parseFloat(ds.el.style.left||'0') || 0;
+      const leftPx  = parseFloat(ds.el.style.left||'0') || 0;
       const widthPx = parseFloat(ds.el.style.width||'0') || ds.el.getBoundingClientRect().width;
       const startUnit = leftPx / scale.pxPerUnit;
       const endUnit   = startUnit + (widthPx / scale.pxPerUnit);
@@ -719,9 +595,10 @@ function useBarDrag({ view, anchorDate, scale, onTasksChange, setInternalTasks, 
       const leftPx = parseFloat(el.style.left||'0') || 0;
       const widthPx= parseFloat(el.style.width||'0') || el.getBoundingClientRect().width;
       const startUnit = leftPx / scale.pxPerUnit;
-      const durationU = Math.max(0.1, widthPx / scale.pxPerUnit);
-      const change = { startUnit, durationU, mode: ds.mode, snapUnits };
+      const endUnit   = startUnit + Math.max(0.1, widthPx / scale.pxPerUnit);
+      const change = { startUnit, durationU: endUnit - startUnit, mode: ds.mode, snapUnits };
       if (typeof onTasksChange === 'function') onTasksChange(ds.task, change);
+      // State nicht verändern (stabiler Stand)
       setInternalTasks(prev => prev.map(t => t.id===ds.task.id ? t : t));
       dragRef.current = null;
       document.body.style.cursor = 'default';
@@ -749,39 +626,93 @@ function useBarDrag({ view, anchorDate, scale, onTasksChange, setInternalTasks, 
       task: { id: taskId }
     };
     document.body.style.cursor = (mode==='move'? 'grabbing' : 'ew-resize');
-    // Show initial tooltip
     const leftPx = parseInt(el.style.left||'0',10) || 0;
     const widthPx= parseInt(el.style.width||'0',10) || rect.width;
     const startUnit = leftPx / scale.pxPerUnit;
     const endUnit   = startUnit + (widthPx / scale.pxPerUnit);
-    const evt = e.nativeEvent || e;
-    updateTip(startUnit, endUnit, evt.clientX, evt.clientY);
+    updateTip(startUnit, endUnit, e.clientX, e.clientY);
     e.preventDefault();
   };
 
-  // New: start drag directly from a known element + mode (used by global hit‑testing)
-  const beginFromElement = (el, taskId, mode, clientX, clientY) => {
-    const rect = el.getBoundingClientRect();
-    dragRef.current = {
-      mode,
-      el,
-      startX: clientX,
-      origLeft: parseInt(el.style.left||'0',10) || 0,
-      origWidth: parseInt(el.style.width||'0',10) || rect.width,
-      task: { id: taskId }
-    };
-    document.body.style.cursor = (mode==='move'? 'grabbing' : 'ew-resize');
-    const leftPx = parseInt(el.style.left||'0',10) || 0;
-    const widthPx= parseInt(el.style.width||'0',10) || rect.width;
-    const startUnit = leftPx / scale.pxPerUnit;
-    const endUnit   = startUnit + (widthPx / scale.pxPerUnit);
-    updateTip(startUnit, endUnit, clientX, clientY);
-  };
-
-  return { onBarMouseDown, beginFromElement };
+  return { onBarMouseDown };
 }
 
-// ---------- Unit→Date helpers ----------
+/* ---- Snap options ---- */
+function getSnapOptions(view, preset){
+  if (view === 'hour'){
+    return [
+      { label: '1 min',  units: 1/60 },
+      { label: '5 min',  units: 5/60 },
+      { label: '10 min', units: 10/60 },
+      { label: '15 min', units: 15/60 },
+    ];
+  }
+  if (view === 'week'){
+    return [
+      { label: '15 min', units: 15/1440 },
+      { label: '30 min', units: 30/1440 },
+      { label: '1 h',    units: 1/24 },
+      { label: '2 h',    units: 2/24 },
+      { label: '4 h',    units: 4/24 },
+    ];
+  }
+  if (/Full Month/i.test(preset||'')){
+    return [
+      { label: '6 h',  units: 6/24 },
+      { label: '12 h', units: 12/24 },
+      { label: '1 d',  units: 1 },
+      { label: '2 d',  units: 2 },
+    ];
+  }
+  return [
+    { label: '1 h',  units: 1/24 },
+    { label: '3 h',  units: 3/24 },
+    { label: '6 h',  units: 6/24 },
+    { label: '12 h', units: 12/24 },
+    { label: '1 d',  units: 1 },
+  ];
+}
+
+/* ---- Data utils ---- */
+const DEFAULT_PALETTE = [
+  '#3B82F6','#10B981','#F59E0B','#EF4444','#8B5CF6','#06B6D4','#84CC16','#F97316','#E11D48','#14B8A6'
+];
+
+function normalizeTask(t, palette){
+  const start = (t.start instanceof Date) ? t.start : new Date(t.start);
+  const end   = (t.end   instanceof Date) ? t.end   : new Date(t.end);
+  const color = t.color || colorFor(resourceHash(t.resourceId), palette);
+  return { ...t, start, end, color };
+}
+
+function resourceHash(id){ let h=0; for (let i=0;i<id.length;i++){ h=(h*31 + id.charCodeAt(i))|0; } return Math.abs(h); }
+function colorFor(h, palette){ return palette[h % palette.length]; }
+
+function generateResources(n){
+  const first = ["Alice","Yusuf","Ivan","Leo","Zara","George","Ethan","Iris","Ulrich","Edward","Walter","Petra","Cedric","Delia","Rachel","Maya","Charlie","Xena","Noah","Vera","Diana","Hugo","Julia","Samuel","Kevin","Luna","Bella","Quentin","Marcus","Jake","Nina"]; 
+  const last  = ["Robinson","Harris","Nguyen","Johnson","Gonzalez","Flores","Lewis","Young","Hill","Anderson","Wright","Moore","Taylor","Davis","Torres","Perez","Allen","Walker","King","Brown","Sanchez","Williams","Martinez","Ramirez","White","Scott","Clark","Thomas","Nguyen"]; 
+  const out=[]; for(let i=0;i<n;i++){ out.push({ id:`r${i}`, name:`${first[i%first.length]} ${last[(i*7)%last.length]}` }); } return out;
+}
+
+function generateSampleTasks(resources, anchorDate, palette){
+  const tasks = [];
+  const dim = daysInMonth(anchorDate);
+  for (const r of resources){
+    const count = 8 + Math.floor(Math.random()*8);
+    for(let i=0;i<count;i++){
+      const day = 1 + Math.floor(Math.random()*dim);
+      const startH = Math.floor(Math.random()*20);
+      const durH = 2 + Math.floor(Math.random()*5);
+      const start = new Date(anchorDate.getFullYear(), anchorDate.getMonth(), day, startH, 0, 0);
+      const end   = new Date(start.getTime() + durH*3600*1000);
+      const color = colorFor(resourceHash(r.id) + i, palette);
+      tasks.push({ id:`${r.id}-t${i}`, resourceId:r.id, title:`T${i+1}`, start, end, color });
+    }
+  }
+  return tasks;
+}
+
+/* ---- Unit↔Date helpers ---- */
 function startOfDay(d){ const x=new Date(d); x.setHours(0,0,0,0); return x; }
 function startOfISOWeek(d){ const x=startOfDay(d); const wd=(x.getDay()+6)%7; x.setDate(x.getDate()-wd); return x; }
 function addHours(d,h){ const x=new Date(d); x.setTime(x.getTime()+h*3600*1000); return x; }
@@ -800,7 +731,6 @@ function unitsToDateRange(view, anchorDate, su, eu){
     const e = addHours(addDays(base, eDay), Math.max(0.5, eFrac*24));
     return { start: s, end: e };
   }
-  // month
   const base = new Date(anchorDate.getFullYear(), anchorDate.getMonth(), 1);
   const sDay = Math.floor(su); const eDay = Math.floor(eu);
   const sFrac = su - sDay; const eFrac = eu - eDay;
@@ -815,95 +745,46 @@ function fmtDateTime(d){
   return `${dd}.${mm}.${yyyy} ${hh}:${mi}`;
 }
 
-// ---- Snap options per view/preset (values are in *view units*) ----
-function getSnapOptions(view, preset){
-  if (view === 'hour'){
-    return [
-      { label: '1 min',  units: 1/60 },
-      { label: '5 min',  units: 5/60 },
-      { label: '10 min', units: 10/60 },
-      { label: '15 min', units: 15/60 },
-    ];
+/* ---- Lane assignment ---- */
+function assignLanes(items, maxLanes){
+  const sorted = items.slice().sort((a,b) => a.seg.startUnit - b.seg.startUnit || a.seg.endUnit - b.seg.endUnit);
+  const laneEnds = [];
+  const out = [];
+  for (const it of sorted){
+    let lane = laneEnds.findIndex(end => end <= it.seg.startUnit + 1e-9);
+    if (lane === -1){
+      if (laneEnds.length < maxLanes) {
+        lane = laneEnds.length;
+        laneEnds.push(it.seg.endUnit);
+      } else {
+        lane = maxLanes - 1;
+        laneEnds[lane] = Math.max(laneEnds[lane], it.seg.endUnit);
+      }
+    } else {
+      laneEnds[lane] = it.seg.endUnit;
+    }
+    out.push({ task: it.task, seg: it.seg, lane });
   }
-  if (view === 'week'){
-    // snapping in fractions of a day
-    return [
-      { label: '15 min', units: 15/1440 },
-      { label: '30 min', units: 30/1440 },
-      { label: '1 h',    units: 1/24 },
-      { label: '2 h',    units: 2/24 },
-      { label: '4 h',    units: 4/24 },
-    ];
-  }
-  // Month view: adapt to preset length
-  if (/Full Month/i.test(preset||'')){
-    return [
-      { label: '6 h',  units: 6/24 },
-      { label: '12 h', units: 12/24 },
-      { label: '1 d',  units: 1 },
-      { label: '2 d',  units: 2 },
-    ];
-  }
-  // 7/14 days → finer grid
-  return [
-    { label: '1 h',  units: 1/24 },
-    { label: '3 h',  units: 3/24 },
-    { label: '6 h',  units: 6/24 },
-    { label: '12 h', units: 12/24 },
-    { label: '1 d',  units: 1 },
-  ];
+  return { items: out, laneCount: Math.max(1, laneEnds.length) };
 }
 
-// ---------- Example parent using API (acts as a manual and edge-case test harness) ----------
+/* ---- Example container (optional) ---- */
 export function GanttContainer(){
   const [res, setRes] = useState([]);
   const [tsk, setTsk] = useState([]);
-
   useEffect(() => {
-    (async () => {
-      try {
-        const r = await fetch('/api/resources');
-        const resources = await r.json();
-        const t = await fetch('/api/tasks');
-        const rawTasks = await t.json();
-        setRes(resources);
-        setTsk(rawTasks.map(x => normalizeTask(x, DEFAULT_PALETTE)));
-      } catch (e) {
-        const now = new Date();
-        const rs = generateResources(20); // smaller set for quick visual test
-        setRes(rs);
-        setTsk(generateSampleTasks(rs, new Date(now.getFullYear(), now.getMonth(), 1), DEFAULT_PALETTE));
-      }
-    })();
+    const now = new Date();
+    const rs = generateResources(20);
+    setRes(rs);
+    setTsk(generateSampleTasks(rs, new Date(now.getFullYear(), now.getMonth(), 1), DEFAULT_PALETTE));
   }, []);
-
   const handleTasksChange = (task, change) => {
-    // For testing, just log; integrate your PATCH here.
     console.log('Task changed', task, change);
   };
-
   return (
     <div className="h-screen">
-      <RobustGantt resources={res} tasks={tsk} initialView="hour" initialPreset="12 Hours"
+      <RobustGantt resources={res} tasks={tsk} initialView="month" initialPreset="Full Month"
                    onTasksChange={handleTasksChange} palette={DEFAULT_PALETTE} />
-    </div>
-  );
-}
-
-// Extra edge-case test: crossing day/month boundaries
-export function GanttEdgeCases(){
-  const resources = useMemo(() => [{ id:'rA', name:'Alice' }, { id:'rB', name:'Bob' }], []);
-  const now = new Date();
-  const monthStart = new Date(now.getFullYear(), now.getMonth(), 1);
-  const monthEnd = new Date(now.getFullYear(), now.getMonth()+1, 0);
-  const tasks = [
-    { id:'t1', resourceId:'rA', title:'Overnight', start:new Date(now.getFullYear(), now.getMonth(), 10, 22, 0), end:new Date(now.getFullYear(), now.getMonth(), 11, 6, 0), color:'#3B82F6' },
-    { id:'t2', resourceId:'rA', title:'Edge Start', start:new Date(monthStart.getFullYear(), monthStart.getMonth(), 1, 0, 30), end:new Date(monthStart.getFullYear(), monthStart.getMonth(), 1, 2, 0), color:'#10B981' },
-    { id:'t3', resourceId:'rB', title:'Edge End', start:new Date(monthEnd.getFullYear(), monthEnd.getMonth(), monthEnd.getDate()-1, 12, 0), end:new Date(monthEnd.getFullYear(), monthEnd.getMonth(), monthEnd.getDate(), 23, 30), color:'#F59E0B' },
-  ];
-  return (
-    <div className="h-screen">
-      <RobustGantt resources={resources} tasks={tasks} initialView="month" initialPreset="14 Days" />
     </div>
   );
 }
