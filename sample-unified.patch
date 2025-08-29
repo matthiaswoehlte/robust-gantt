@@ -1,0 +1,68 @@
+# im Repo-Hauptordner
+cat > sample-unified.patch <<'PATCH'
+diff --git a/src/components/RobustGantt.jsx b/src/components/RobustGantt.jsx
+index 0000000..0000001 100644
+--- a/src/components/RobustGantt.jsx
++++ b/src/components/RobustGantt.jsx
+@@ -1,5 +1,57 @@
+-import React, { useEffect, useMemo, useRef, useState, useCallback } from "react";
++import React, { useEffect, useMemo, useRef, useState, useCallback } from "react";
++
++// Gemeinsame Sample-Datenbasis + Downsampling
++const SAMPLE_RES_COUNT = 20;
++const SAMPLE_TASKS_PER_RESOURCE = 6;
++function seededRng(seed){let s=seed>>>0;return()=>{s^=s<<13;s^=s>>>17;s^=s<<5;return(s>>>0)/0xffffffff};}
++function generateResources(n){return Array.from({length:n},(_,i)=>({id:`res-${i+1}`,name:`Resource ${i+1}`}));}
++function generateBaseSampleTasks(resources,anchorDate,tasksPerRes=6,seed=1337){
++  const rnd=seededRng(seed),dayMs=86400000,hourMs=3600000;
++  const a=new Date(anchorDate);const startOfDay=new Date(a.getFullYear(),a.getMonth(),a.getDate()).getTime();
++  const tasks=[];for(const r of resources){for(let k=0;k<tasksPerRes;k++){
++    const dayOffset=Math.floor((rnd()*11)-5);const startHour=Math.floor(rnd()*20);
++    const durH=Math.max(1,Math.floor(rnd()*6));const startMs=startOfDay+dayOffset*dayMs+startHour*hourMs;
++    tasks.push({id:`${r.id}-t${k}`,resourceId:r.id,startMs,durationH:durH});
++  }}return tasks.sort((a,b)=>a.startMs-b.startMs);
++}
++function downsampleByResource(tasks,ratio=0.5){
++  if(ratio>=1)return tasks;const byRes=new Map();
++  for(const t of tasks){if(!byRes.has(t.resourceId))byRes.set(t.resourceId,[]);byRes.get(t.resourceId).push(t);}
++  const out=[];for(const arr of byRes.values()){const keep=Math.max(1,Math.floor(arr.length*ratio));
++    out.push(...arr.filter((_,i)=>i%Math.round(1/ratio)===0).slice(0,keep));}
++  return out.sort((a,b)=>a.startMs-b.startMs);
++}
+@@
+-export default function RobustGantt({
++export default function RobustGantt({
+   view = "week",
+   preset = "full",
+   anchorDate = new Date(),
+   laneOffset = 5,
+   maxLanes = 8,
+   onTasksChange,
+   /* … weitere Props … */
+ }) {
+-  // bisher: je View/Preset generiert
+-  const resources = useMemo(() => generateResources(24), []);
+-  const [internalTasks, setInternalTasks] = useState(() =>
+-    generateSampleTasks(resources, anchorDate /* , preset/view */)
+-  );
++  // EINE gemeinsame Basis für alle Views/Presets
++  const resources = useMemo(() => generateResources(SAMPLE_RES_COUNT), []);
++  const baseTasks = useMemo(
++    () => generateBaseSampleTasks(resources, anchorDate, SAMPLE_TASKS_PER_RESOURCE),
++    [resources, anchorDate]
++  );
++  const [internalTasks, setInternalTasks] = useState(baseTasks);
++  useEffect(() => { setInternalTasks(baseTasks); }, [baseTasks]);
++
++  // Sichtbare Tasks (nur Anzeige halbieren im hour-View)
++  const visibleTasks = useMemo(
++    () => (view === "hour" ? downsampleByResource(internalTasks, 0.5) : internalTasks),
++    [internalTasks, view]
++  );
+@@
+-  const itemsForLayout = useMemo(() => mapTasksToSegments(internalTasks, view, preset, anchorDate), [internalTasks, view, preset, anchorDate]);
++  const itemsForLayout = useMemo(
++    () => mapTasksToSegments(visibleTasks, view, preset, anchorDate),
++    [visibleTasks, view, preset, anchorDate]
++  );
+ PATCH

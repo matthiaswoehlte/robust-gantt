@@ -14,6 +14,47 @@ import React, { useEffect, useMemo, useRef, useState, useLayoutEffect } from "re
  * - ✅ Edge resize handles preserved; single scrollbar on bars; timeline follows via transform.
  * - ✅ Snap dropdown adapts to Hour/Week/Month; 5‑min grid for 4/6 hours presets; drag tooltip.
  */
+// === unified sample data (one base dataset for all views) ===
+const SAMPLE_RES_COUNT = 20;           // demo resources
+const SAMPLE_TASKS_PER_RESOURCE = 6;   // bars per resource (base density)
+
+function seededRng(seed) {
+  let s = seed >>> 0;
+  return () => { s^=s<<13; s^=s>>>17; s^=s<<5; return (s>>>0)/0xffffffff; };
+}
+/** ONE shared task list based on wall-clock (startMs/durationH), independent of view/preset */
+function generateBaseSampleTasks(resources, anchorDate, tasksPerRes = 6, seed = 1337) {
+  const rnd = seededRng(seed), dayMs = 86400000, hourMs = 3600000;
+  const a = new Date(anchorDate);
+  const startOfDay = new Date(a.getFullYear(), a.getMonth(), a.getDate()).getTime();
+  const tasks = [];
+  for (const r of resources) {
+    for (let k = 0; k < tasksPerRes; k++) {
+      const dayOffset = Math.floor((rnd()*11)-5);     // -5..+5 days
+      const startHour = Math.floor(rnd()*20);         // 0..19 h
+      const durH = Math.max(1, Math.floor(rnd()*6));  // 1..5 h
+      const startMs = startOfDay + dayOffset*dayMs + startHour*hourMs;
+      tasks.push({ id: `${r.id}-t${k}`, resourceId: r.id, startMs, durationH: durH });
+    }
+  }
+  return tasks.sort((a,b)=>a.startMs-b.startMs);
+}
+/** show fewer bars per resource (ratio) – used for hour/day view */
+function downsampleByResource(tasks, ratio = 0.5) {
+  if (ratio >= 1) return tasks;
+  const byRes = new Map();
+  for (const t of tasks) {
+    if (!byRes.has(t.resourceId)) byRes.set(t.resourceId, []);
+    byRes.get(t.resourceId).push(t);
+  }
+  const out = [];
+  for (const arr of byRes.values()) {
+    const keep = Math.max(1, Math.floor(arr.length * ratio));
+    out.push(...arr.filter((_, i) => i % Math.round(1/ratio) === 0).slice(0, keep));
+  }
+  return out.sort((a,b)=>a.startMs-b.startMs);
+}
+// === /unified sample data ===
 
 export default function RobustGantt({
   resources: resourcesProp,
@@ -35,6 +76,13 @@ export default function RobustGantt({
     const d = new Date();
     return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}`;
   });
+  // View-Datum nur für Hour-View (Default: heute 00:00)
+	const [hourViewDate, setHourViewDate] = useState(() => {
+	  const d = new Date();
+	  d.setHours(0,0,0,0);
+	  return d;
+	});
+
 
   // Snap step in *view units* (Hour: hours, Week/Month: fractions of a day)
   const [snapUnits, setSnapUnits] = useState(getSnapOptions(initialView, initialPreset ?? defaultPresetFor(initialView))[0].units);
@@ -59,6 +107,8 @@ export default function RobustGantt({
   }, [resourcesProp]);
 
   const [internalTasks, setInternalTasks] = useState([]);
+  
+  
   const normalizedIncoming = useMemo(() => (tasksProp||[]).map(t => normalizeTask(t, palette)), [tasksProp, palette]);
 
   useEffect(() => {
@@ -69,8 +119,9 @@ export default function RobustGantt({
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [resources, anchorDate, tasksProp]);
+ 
+ const tasks = (view === 'hour' ? downsampleByResource(internalTasks, 0.99) : internalTasks);
 
-  const tasks = internalTasks;
 
   // ------------ Layout Refs ------------
   const timelineContentRef = useRef(null);
@@ -165,7 +216,8 @@ export default function RobustGantt({
       const segs = [];
       for (const t of tasks){
         if (t.resourceId !== r.id) continue;
-        const seg = projectTaskToView(t, view, preset, anchorDate);
+        const seg = projectTaskToView(t, view, preset, (view==='hour' ? hourViewDate : anchorDate));
+
         if (!seg) continue;
         segs.push({ task: t, seg });
       }
@@ -288,9 +340,28 @@ export default function RobustGantt({
             </div>
 
             {/* Date label */}
-            <div className="ctrl text-sm text-gray-400">
-              <span id="gantt-date-label">{formatDateDisplay(new Date())}</span>
-            </div>
+			{view === 'hour' ? (
+			  <div className="ctrl flex items-center gap-2">
+				<label className="text-sm text-gray-300">View Date:</label>
+				<input
+				  id="gantt-view-date"
+				  type="date"
+				  className="bg-gray-800 border border-gray-700 rounded px-2 py-1"
+				  value={formatDateISO(hourViewDate)}
+				  onChange={(e) => {
+					const v = e.target.value; // yyyy-mm-dd
+					const [y,m,d] = v.split('-').map(Number);
+					const nd = new Date(y, (m||1)-1, d||1);
+					nd.setHours(0,0,0,0);
+					setHourViewDate(nd);
+				  }}
+				/>
+			  </div>
+			) : (
+			  <div className="ctrl text-sm text-gray-400">
+				<span id="gantt-date-label">{formatDateDisplay(new Date())}</span>
+			  </div>
+			)}
 
             {/* Snap selector (adapts to view/preset) */}
             <div className="ctrl flex items-center gap-2">
@@ -532,7 +603,12 @@ function daysInMonth(date){ return new Date(date.getFullYear(), date.getMonth()+
 function clamp(n,a,b){ return Math.max(a, Math.min(b, n)); }
 function pad2(n){ return String(n).padStart(2,'0'); }
 function formatDateDisplay(d){ const dd=pad2(d.getDate()); const mm=pad2(d.getMonth()+1); const yyyy=d.getFullYear(); return `${dd}/${mm}/${yyyy}`; }
+function formatDateISO(d){ // yyyy-mm-dd für <input type="date">
+  const pad2 = n => String(n).padStart(2,'0');
+  return `${d.getFullYear()}-${pad2(d.getMonth()+1)}-${pad2(d.getDate())}`;
+}
 
+/*OLD
 function projectTaskToView(task, view, preset, anchorDate){
   if (view==='hour'){
     const startH = task.start.getHours() + task.start.getMinutes()/60;
@@ -564,6 +640,76 @@ function projectTaskToView(task, view, preset, anchorDate){
   }
   return null;
 }
+OLD*/
+function projectTaskToView(task, view, preset, anchorDate){
+  // task.start / task.end sind Date-Objekte
+  const start = task.start;
+  const end   = task.end;
+
+  // Hilfs-Konstanten
+  const HOUR_MS = 60 * 60 * 1000;
+  const DAY_MS  = 24 * HOUR_MS;
+
+if (view==='hour'){
+  // Fenster = ausgewählter Tag 00:00..24:00 (kommt über anchorDate rein)
+  const dayStart = new Date(anchorDate.getFullYear(), anchorDate.getMonth(), anchorDate.getDate(), 0,0,0,0);
+  const dayEnd   = new Date(dayStart.getTime() + 24*60*60*1000);
+
+  // Schnittmenge Task x Tagesfenster
+  const s = new Date(Math.max(task.start.getTime(), dayStart.getTime()));
+  const e = new Date(Math.min(task.end.getTime(),   dayEnd.getTime()));
+  if (e <= s) return null;
+
+  const startUnit = (s.getTime() - dayStart.getTime()) / 3600000; // Stunden seit 00:00
+  const endUnit   = Math.max(startUnit + (5/60), (e.getTime() - dayStart.getTime()) / 3600000); // mind. 5 Min
+  return { startUnit, endUnit, label: task.title };
+}
+
+  if (view === 'week') {
+    const work = /Work/i.test(preset);
+    // Wochenstart: Mo 00:00 (Work Week) oder So 00:00 (Full Week)
+    const ws = new Date(anchorDate);
+    ws.setHours(0,0,0,0);
+    if (work) {
+      // ISO: Montag = 0
+      const monIdx = (ws.getDay() + 6) % 7; // 0..6 (Mo..So)
+      ws.setDate(ws.getDate() - monIdx);
+    } else {
+      // Full Week: Sonntag = Start
+      ws.setDate(ws.getDate() - ws.getDay());
+    }
+    const dayCount = work ? 5 : 7;
+    const we = new Date(ws.getTime() + dayCount * DAY_MS);
+
+    // Schnittmenge Task mit Wochenfenster
+    const s = new Date(Math.max(start.getTime(), ws.getTime()));
+    const e = new Date(Math.min(end.getTime(),   we.getTime()));
+    if (e <= s) return null;
+
+    const startUnit = (s.getTime() - ws.getTime()) / DAY_MS;
+    const endUnit   = Math.max(startUnit + (0.5/24), (e.getTime() - ws.getTime()) / DAY_MS); // mind. 30 Min
+    return { startUnit, endUnit, label: task.title };
+  }
+
+  if (view === 'month') {
+    // Monatsfenster: 1. 00:00 bis 1. des Folgemonats 00:00
+    const ms = new Date(anchorDate.getFullYear(), anchorDate.getMonth(), 1, 0, 0, 0, 0);
+    const me = new Date(anchorDate.getFullYear(), anchorDate.getMonth() + 1, 1, 0, 0, 0, 0);
+
+    // Schnittmenge Task mit Monatsfenster
+    const s = new Date(Math.max(start.getTime(), ms.getTime()));
+    const e = new Date(Math.min(end.getTime(),   me.getTime()));
+    if (e <= s) return null;
+
+    const startUnit = (s.getTime() - ms.getTime()) / DAY_MS;
+    const endUnit   = Math.max(startUnit + (0.5/24), (e.getTime() - ms.getTime()) / DAY_MS); // mind. 30 Min
+    return { startUnit, endUnit, label: task.title };
+  }
+
+  return null;
+}
+
+
 
 function segToPixels(seg, scale){
   if (!seg || !scale) return { leftPx: 0, widthPx: 0, label: seg?.label||'' };
